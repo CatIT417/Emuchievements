@@ -17,15 +17,7 @@ import { format, getTranslateFunc } from "./useTranslations";
 import throttledQueue from "throttled-queue";
 import { CacheData, CustomIdsOverrides } from "./settings";
 import { GameInfoAndUserProgress as Game, GetGameInfoAndUserProgressResponse as GameRaw } from "@retroachievements/api";
-
-// localforage.config({
-// 	name: "emuchievements",
-// 	storeName: "achievements"
-// });
-
-// const romRegex = "(\\/([a-zA-Z\\d-:_.\\s])+)+(?!\\.AppImage)(\\.zip|\\.7z|\\.iso|\\.bin|\\.chd|\\.cue|\\.img|\\.a26|\\.lnx|\\.ngp|\\.ngc|\\.3dsx|\\.3ds|\\.app|\\.axf|\\.cci|\\.cxi|\\.elf|\\.n64|\\.ndd|\\.u1|\\.v64|\\.z64|\\.nds|\\.dmg|\\.gbc|\\.gba|\\.gb|\\.ciso|\\.dol|\\.gcm|\\.gcz|\\.nkit\\.iso|\\.rvz|\\.wad|\\.wia|\\.wbfs|\\.nes|\\.fds|\\.unif|\\.unf|\\.json|\\.kp|\\.nca|\\.nro|\\.nso|\\.nsp|\\.xci|\\.rpx|\\.wud|\\.wux|\\.wua|\\.32x|\\.cdi|\\.gdi|\\.m3u|\\.gg|\\.gen|\\.md|\\.smd|\\.sms|\\.ecm\\|.mds|\\.pbp|\\.dump|\\.gz|\\.mdf|\\.mrg|\\.prx|\\.bs|\\.fig|\\.sfc|\\.smc|\\.swx|\\.pc2|\\.wsc|\\.ws)";
-const romRegex =
-	'(\\/([^/"])+)+(?!\\.AppImage)(\\.zip|\\.7z|\\.iso|\\.bin|\\.chd|\\.cue|\\.img|\\.a26|\\.lnx|\\.ngp|\\.ngc|\\.elf|\\.n64|\\.ndd|\\.u1|\\.v64|\\.z64|\\.nds|\\.dmg|\\.gbc|\\.gba|\\.gb|\\.ciso|\\.cso|\\.rom|\\.nes|\\.fds|\\.unif|\\.unf|\\.32x|\\.cdi|\\.gdi|\\.m3u|\\.gg|\\.gen|\\.smd|\\.sms|\\.ecm|\\.mds|\\.pbp|\\.dump|\\.gz|\\.mdf|\\.mrg|\\.prx|\\.bs|\\.fig|\\.sfc|\\.smc|\\.swx|\\.pc2|\\.wsc|\\.ws|\\.md|\\.gcm|\\.gcz|\\.rvz|\\.wad|\\.wia|\\.wbfs)';
+import { extractEmulationPaths } from "./rom-paths";
 
 export interface Manager
 {
@@ -287,9 +279,9 @@ export class AchievementManager implements Manager
 		{
 			const launchCommand = `${shortcut.strShortcutExe} ${shortcut.strShortcutLaunchOptions}`;
 			this.logger.debug(`${app_id} launchCommand: `, launchCommand);
-			const rom = launchCommand?.match(new RegExp(romRegex, "i"))?.[0];
-			this.logger.debug(`${app_id} rom: `, rom);
-			if (rom)
+			const roms = extractEmulationPaths(launchCommand);
+			this.logger.debug(`${app_id} roms: `, roms);
+			if (roms.length > 0)
 			{
 				if (!this.customIdsOverrides) {
 					this.customIdsOverrides = {}
@@ -340,24 +332,34 @@ export class AchievementManager implements Manager
 
 					await this.saveCache();
 				} else {
-					const md5 = await call<[string], string>("hash", rom);
-					this.logger.debug(`${app_id} md5: `, md5);
-					if (md5 === "")
+					this.ids[app_id] = null;
+					for (const rom of roms)
 					{
-						this.ids[app_id] = null;
-						await this.saveCache();
-						return undefined;
-					} else
-					{
-						const gameId = this.hashes[md5];
-						this.ids[app_id] = gameId ?? null;
-						hash = md5;
-						if (gameId) {
-							this.customIdsOverrides[app_id].retro_achivement_game_id = gameId;
-							this.customIdsOverrides[app_id].hash = md5;
+						try
+						{
+							const candidateHash = await call<[string], string | null>("hash", rom);
+							const md5 = candidateHash?.toLowerCase();
+							this.logger.debug(`${app_id} candidate: `, rom, md5);
+							if (!md5)
+							{
+								continue;
+							}
+
+							const gameId = this.hashes[md5];
+							if (gameId)
+							{
+								this.ids[app_id] = gameId;
+								hash = md5;
+								this.customIdsOverrides[app_id].retro_achivement_game_id = gameId;
+								this.customIdsOverrides[app_id].hash = md5;
+								break;
+							}
+						} catch (error)
+						{
+							this.logger.error(error, `Could not hash ROM candidate ${rom}`);
 						}
-						await this.saveCache();
 					}
+					await this.saveCache();
 				}
 			} else
 			{
